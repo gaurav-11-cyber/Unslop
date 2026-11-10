@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "unslop"
+version = "0.1.0"
+description = "Catch AI-hallucinated (slopsquatted) package names before they get installed."
+requires-python = ">=3.9"
+dependencies = [
+    "requests>=2.28",
+    "click>=8.0",
+]
+
+[project.scripts]
+unslop = "unslop.cli:main"
+
+[tool.setuptools]
+packages = ["unslop"]
+
+[tool.setuptools.package-data]
+unslop = ["../data/*.json"]
