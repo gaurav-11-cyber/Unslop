@@ -38,12 +38,26 @@ explanation.
 
 ```bash
 pip install -e .
-unslop scan requirements.txt
-unslop scan package.json --json report.json
-unslop scan requirements.txt --only newpkg1,newpkg2   # scope to a PR diff
+unslop scan requirements.txt package.json              # scan everything listed
+unslop scan requirements.txt --base origin/main        # only packages ADDED since origin/main
+unslop scan package.json --json report.json --markdown comment.md
 ```
 
-Exits non-zero if anything is blocked, so it works as a CI gate.
+Exit codes: `0` nothing blocked, `1` at least one package blocked, `2` Unslop could not run
+(bad git ref, unreadable manifest).
+
+## GitHub Action
+
+`.github/workflows/unslop.yml` runs on every pull request that touches a
+`requirements*.txt` or `package.json`. It scans only the packages the PR adds,
+posts (or updates) one PR comment with the findings, writes the same report to
+the job summary, and fails the check if anything is blocked.
+
+Design notes: it uses `pull_request` (not `pull_request_target`) so code from
+forks never runs with secrets; the base branch name is passed through `env`, not
+interpolated into the script; package names from the PR are sanitised before they
+are printed, because the PR author controls them. On fork PRs the token is
+read-only, so the comment step is skipped and the job summary carries the report.
 
 ## Project layout
 
@@ -51,19 +65,24 @@ Exits non-zero if anything is blocked, so it works as a CI gate.
 unslop/
   unslop/
     registry_client.py   # PyPI + npm registry API calls
-    heuristics.py         # risk scoring engine
-    scanner.py             # manifest parsing + orchestration
-    cli.py                    # command-line interface
-  data/
-    known_hallucinations.json   # seed corpus of documented incidents
-    popular_packages.json         # comparison set for typosquat detection
+    heuristics.py        # risk scoring engine
+    scanner.py           # manifest parsing + orchestration
+    gitdiff.py           # which packages are new compared to a git ref
+    report.py            # Markdown output for PR comments
+    cli.py               # command-line interface
+    data/
+      known_hallucinations.json   # corpus of documented incidents
+      popular_packages.json       # comparison set for typosquat detection
   tests/
-    demo_requirements.txt, demo_package.json   # demo fixtures
+    test_unslop.py                              # offline tests (registry calls are faked)
+    demo_requirements.txt, demo_package.json    # demo fixtures
+  .github/workflows/unslop.yml                  # PR check
 ```
+
+Run the tests with `pip install pytest && pytest`.
 
 ## Roadmap
 
-- GitHub Action wrapper (auto-comment on PRs, gate merges)
 - Web dashboard (scan history, org-wide risk visibility)
 - Multi-registry support (crates.io, Go modules)
 - Community-reported hallucination corpus
