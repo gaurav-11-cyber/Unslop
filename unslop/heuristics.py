@@ -20,7 +20,7 @@ from typing import Optional
 
 from .registry_client import PackageMetadata
 
-DATA_DIR = Path(__file__).resolve().parent.parent / "data"
+DATA_DIR = Path(__file__).resolve().parent / "data"
 
 
 def _levenshtein(a: str, b: str) -> int:
