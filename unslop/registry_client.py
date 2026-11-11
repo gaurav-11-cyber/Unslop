@@ -35,7 +35,7 @@ class PackageMetadata:
     maintainer_count: int = 0
     version_count: int = 0
     raw_error: Optional[str] = None
-    fetched_at: dt.datetime = field(default_factory=dt.datetime.utcnow)
+    fetched_at: dt.datetime = field(default_factory=lambda: dt.datetime.now(dt.timezone.utc))
 
 
 def _session() -> requests.Session:
