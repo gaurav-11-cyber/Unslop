@@ -19,4 +19,4 @@ unslop = "unslop.cli:main"
 packages = ["unslop"]
 
 [tool.setuptools.package-data]
-unslop = ["../data/*.json"]
+unslop = ["data/*.json"]
