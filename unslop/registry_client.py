@@ -94,14 +94,13 @@ def fetch_pypi_metadata(package_name: str, session: Optional[requests.Session] =
     if earliest:
         age_days = (dt.datetime.now(dt.timezone.utc) - earliest).days
 
-    project_urls = info.get("project_urls") or {}
-    repo_url = None
-    for key in ("Source", "Repository", "Homepage", "Source Code"):
-        if project_urls.get(key):
-            repo_url = project_urls[key]
-            break
-    if not repo_url and info.get("home_page"):
-        repo_url = info["home_page"]
+    candidates = [u for u in (info.get("project_urls") or {}).values() if isinstance(u, str)]
+    if isinstance(info.get("home_page"), str):
+        candidates.append(info["home_page"])
+    code_hosts = ("github.com", "gitlab.com", "bitbucket.org", "codeberg.org")
+    repo_url = next((u for u in candidates if any(h in u for h in code_hosts)), None)
+    has_repo = repo_url is not None
+    repo_url = repo_url or (candidates[0] if candidates else None)
 
     weekly_downloads = _fetch_pypi_downloads(package_name, session)
 
@@ -111,7 +110,7 @@ def fetch_pypi_metadata(package_name: str, session: Optional[requests.Session] =
         exists=True,
         age_days=age_days,
         weekly_downloads=weekly_downloads,
-        has_repository=bool(repo_url and ("github.com" in repo_url or "gitlab.com" in repo_url)),
+        has_repository=has_repo,
         repository_url=repo_url,
         maintainer_count=1 if info.get("author") or info.get("maintainer") else 0,
         version_count=len(releases),

@@ -47,3 +47,23 @@ def test_scan_keeps_order_and_handles_duplicates_and_empty(tmp_path, monkeypatch
     empty = tmp_path / "requirements-empty.txt"
     empty.write_text("# nothing here\n\n")
     assert scanner.scan_manifest(empty).total_packages == 0
+
+
+def test_pypi_repo_found_even_when_homepage_listed_first():
+    from unslop.registry_client import fetch_pypi_metadata
+
+    class R:
+        def __init__(self, code, data=None): self.status_code, self._d = code, data or {}
+        def json(self): return self._d
+
+    class FakeSession:
+        def get(self, url, timeout=None):
+            if "pypi.org" in url:
+                return R(200, {"info": {"project_urls": {"Homepage": "https://numpy.org",
+                                                         "Source Code": "https://github.com/numpy/numpy"},
+                                        "author": "x"},
+                               "releases": {"1.0": [{"upload_time_iso_8601": "2010-01-01T00:00:00Z"}]}})
+            return R(404)
+
+    m = fetch_pypi_metadata("numpy", FakeSession())
+    assert m.has_repository and "github.com" in m.repository_url
