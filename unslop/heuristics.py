@@ -111,6 +111,7 @@ class RiskAssessment:
     verdict: str  # "block", "warn", "pass"
     reasons: list[str] = field(default_factory=list)
     known_incident: Optional[dict] = None
+    location: Optional[str] = None   # e.g. README.md:42 when found in docs/scripts
 
 
 class HallucinationEngine:

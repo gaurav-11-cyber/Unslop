@@ -126,23 +126,45 @@ def scan_manifest(
     if only_new is not None:
         wanted = {n.lower() for n in only_new}
         names = [n for n in names if n.lower() in wanted]
+    return scan_items(str(path), ecosystem, [(n, None) for n in names], engine)
 
-    report = ScanReport(manifest=str(path), ecosystem=ecosystem, total_packages=len(names))
+
+def scan_items(
+    label: str,
+    ecosystem: str,
+    items: list[tuple[str, Optional[str]]],
+    engine: Optional[HallucinationEngine] = None,
+    docs: bool = False,
+    strict_docs: bool = False,
+) -> ScanReport:
+    """
+    Score (name, location) pairs. In docs mode (names pulled from READMEs, scripts, CI
+    files) a BLOCK that is not a documented incident is downgraded to WARN, because docs
+    often mention unreleased, example or in-house package names. --strict-docs keeps BLOCK.
+    """
+    engine = engine or HallucinationEngine()
+    report = ScanReport(manifest=label, ecosystem=ecosystem, total_packages=len(items))
+    names = [n for n, _ in items]
 
     valid = list(dict.fromkeys(n for n in names if VALID_NAME.match(n)))
     with ThreadPoolExecutor(max_workers=8) as pool:  # registry calls are I/O bound
         metas = dict(zip(valid, pool.map(lambda n: fetch_metadata(n, ecosystem), valid)))
 
-    for name in names:
+    for name, location in items:
         if name not in metas:
             assessment = _invalid_name_assessment(name, ecosystem)
         else:
             assessment = engine.assess(name, metas[name])
+        assessment.location = location
+        if docs and not strict_docs and assessment.verdict == "block" and assessment.known_incident is None:
+            assessment.verdict = "warn"
+            assessment.reasons.append(
+                "Found in docs/scripts, where example or unreleased package names are common, "
+                "so BLOCK was downgraded to WARN (--strict-docs keeps BLOCK).")
         if assessment.verdict == "block":
             report.blocked.append(assessment)
         elif assessment.verdict == "warn":
             report.warned.append(assessment)
         else:
             report.passed.append(assessment)
-
     return report
