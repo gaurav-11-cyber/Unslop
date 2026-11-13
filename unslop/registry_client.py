@@ -14,6 +14,7 @@ No API keys needed - these are all public, unauthenticated endpoints.
 from __future__ import annotations
 
 import datetime as dt
+import time
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -44,13 +45,27 @@ def _session() -> requests.Session:
     return s
 
 
+def _get(session: requests.Session, url: str, retries: int = 2) -> requests.Response:
+    """GET with short backoff on timeouts, 429 and 5xx. Raises requests.RequestException if all tries fail."""
+    for attempt in range(retries + 1):
+        try:
+            resp = session.get(url, timeout=TIMEOUT)
+            if resp.status_code not in (429, 500, 502, 503, 504) or attempt == retries:
+                return resp
+        except requests.RequestException:
+            if attempt == retries:
+                raise
+        time.sleep(0.5 * 2 ** attempt)
+    raise AssertionError("unreachable")
+
+
 # ---------------------------------------------------------------- PyPI ----
 
 def fetch_pypi_metadata(package_name: str, session: Optional[requests.Session] = None) -> PackageMetadata:
     session = session or _session()
     url = f"https://pypi.org/pypi/{package_name}/json"
     try:
-        resp = session.get(url, timeout=TIMEOUT)
+        resp = _get(session, url)
     except requests.RequestException as e:
         return PackageMetadata(name=package_name, ecosystem="pypi", exists=False, raw_error=str(e))
 
@@ -123,7 +138,7 @@ def fetch_npm_metadata(package_name: str, session: Optional[requests.Session] = 
     session = session or _session()
     url = f"https://registry.npmjs.org/{package_name}"
     try:
-        resp = session.get(url, timeout=TIMEOUT)
+        resp = _get(session, url)
     except requests.RequestException as e:
         return PackageMetadata(name=package_name, ecosystem="npm", exists=False, raw_error=str(e))
 

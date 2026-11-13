@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import re
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Optional
@@ -128,11 +129,15 @@ def scan_manifest(
 
     report = ScanReport(manifest=str(path), ecosystem=ecosystem, total_packages=len(names))
 
+    valid = list(dict.fromkeys(n for n in names if VALID_NAME.match(n)))
+    with ThreadPoolExecutor(max_workers=8) as pool:  # registry calls are I/O bound
+        metas = dict(zip(valid, pool.map(lambda n: fetch_metadata(n, ecosystem), valid)))
+
     for name in names:
-        if not VALID_NAME.match(name):
+        if name not in metas:
             assessment = _invalid_name_assessment(name, ecosystem)
         else:
-            assessment = engine.assess(name, fetch_metadata(name, ecosystem))
+            assessment = engine.assess(name, metas[name])
         if assessment.verdict == "block":
             report.blocked.append(assessment)
         elif assessment.verdict == "warn":
