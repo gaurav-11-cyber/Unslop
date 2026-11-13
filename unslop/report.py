@@ -25,6 +25,14 @@ def safe_name(name: str, limit: int = 80) -> str:
     return _ILLEGAL.sub("?", name)[:limit]
 
 
+_ILLEGAL_LOC = re.compile(r"[^A-Za-z0-9@/._~+:-]")
+
+
+def safe_location(loc: str, limit: int = 200) -> str:
+    """Like safe_name but keeps ':' so 'README.md:42' stays readable (shown inside a code span)."""
+    return _ILLEGAL_LOC.sub("?", loc)[:limit]
+
+
 def _cell(text: str) -> str:
     return text.replace("|", "\\|").replace("\n", " ")
 
@@ -53,11 +61,15 @@ def render_markdown(reports: list[ScanReport]) -> str:
         flagged = rep.blocked + rep.warned
         if not flagged:
             continue
-        lines += [f"### `{safe_name(rep.manifest, 200)}` ({rep.ecosystem})", "",
+        label, kind = rep.manifest, ""
+        if label.endswith(" (install commands)"):
+            label, kind = label[: -len(" (install commands)")], " install commands"
+        lines += [f"### `{safe_location(label)}`{kind} ({rep.ecosystem})", "",
                   "| Package | Verdict | Risk | Why |", "|---|---|---|---|"]
         for a in flagged:
             why = " ".join(_cell(r) for r in a.reasons)
-            lines.append(f"| `{safe_name(a.package)}` | {_ICON[a.verdict]} | {a.risk_score}/100 | {why} |")
+            where = f"<br>`{safe_location(a.location)}`" if a.location else ""
+            lines.append(f"| `{safe_name(a.package)}`{where} | {_ICON[a.verdict]} | {a.risk_score}/100 | {why} |")
         lines.append("")
 
     clean = [safe_name(a.package) for r in reports for a in r.passed]

@@ -19,13 +19,19 @@ from pathlib import Path
 
 import click
 
+from .docscan import is_doc_file, scan_doc
 from .gitdiff import GitError, added_packages
 from .heuristics import HallucinationEngine
-from .report import render_markdown, safe_name
+from .report import render_markdown, safe_name, safe_location
 from .scanner import ScanReport, scan_manifest, ecosystem_for
 
 VERDICT_COLOR = {"block": "red", "warn": "yellow", "pass": "green"}
 VERDICT_ICON = {"block": "\u2717 BLOCK", "warn": "\u26a0 WARN", "pass": "\u2713 PASS"}
+
+
+def _plain(text: str) -> str:
+    """Strip control characters (file names are untrusted; avoids terminal-escape tricks in CI logs)."""
+    return "".join("?" if ord(c) < 32 or ord(c) == 127 else c for c in text)
 
 
 @click.group()
@@ -49,16 +55,25 @@ def _fail(message: str) -> None:
               help="Write the full scan report as JSON to this path.")
 @click.option("--markdown", "md_out", type=click.Path(path_type=Path), default=None,
               help="Write a Markdown report (for a PR comment) to this path.")
+@click.option("--strict-docs", is_flag=True, default=False,
+              help="In docs/scripts, keep BLOCK for unknown packages (default: downgrade to WARN).")
 @click.option("--fail-on-block/--no-fail-on-block", default=True,
               help="Exit with status 1 if any package is blocked (for CI gating).")
-def scan(manifests, base_ref, only, json_out, md_out, fail_on_block):
-    """Scan dependency manifests (requirements.txt, package.json) for slopsquatting risk."""
+def scan(manifests, base_ref, only, json_out, md_out, strict_docs, fail_on_block):
+    """Scan manifests (requirements.txt, package.json) and install commands in docs/scripts (.md, .sh, Dockerfile, CI YAML)."""
     only_list = [x.strip() for x in only.split(",")] if only else None
     engine = HallucinationEngine()
     reports: list[ScanReport] = []
 
     for manifest in manifests:
         try:
+            if is_doc_file(manifest):
+                click.echo(f"Scanning install commands in {manifest}" + (f" (new since {base_ref})" if base_ref else "") + " ...")
+                found = scan_doc(manifest, engine, base_ref, only_list, strict_docs)
+                if not found:
+                    click.echo("  no new install commands found" if base_ref else "  no install commands found")
+                reports.extend(found)
+                continue
             ecosystem_for(manifest)
             names = only_list
             if base_ref:
@@ -75,7 +90,7 @@ def scan(manifests, base_ref, only, json_out, md_out, fail_on_block):
 
     click.echo()
     for report in reports:
-        click.echo(f"{report.manifest}  |  ecosystem: {report.ecosystem}  |  packages checked: {report.total_packages}")
+        click.echo(f"{_plain(report.manifest)}  |  ecosystem: {report.ecosystem}  |  packages checked: {report.total_packages}")
         click.echo("-" * 60)
         if report.total_packages == 0:
             click.echo("No packages to scan.\n")
@@ -83,6 +98,8 @@ def scan(manifests, base_ref, only, json_out, md_out, fail_on_block):
             for a in assessments:
                 click.secho(f"{VERDICT_ICON[group]}  {safe_name(a.package)}  (risk: {a.risk_score}/100)",
                             fg=VERDICT_COLOR[group], bold=True)
+                if a.location:
+                    click.echo(f"    at {safe_location(a.location)}")
                 for reason in a.reasons:
                     click.echo(f"    - {reason}")
                 click.echo()
