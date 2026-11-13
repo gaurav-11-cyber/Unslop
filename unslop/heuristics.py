@@ -14,6 +14,7 @@ it did.
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
@@ -52,27 +53,53 @@ def similarity_ratio(a: str, b: str) -> float:
     return 1.0 - (_levenshtein(a.lower(), b.lower()) / max_len)
 
 
+def edit_distance(a: str, b: str) -> int:
+    """Optimal-string-alignment distance: insert / delete / substitute / swap adjacent = 1 edit."""
+    a, b = a.lower(), b.lower()
+    prev2, prev = None, list(range(len(b) + 1))
+    for i, ca in enumerate(a, 1):
+        cur = [i]
+        for j, cb in enumerate(b, 1):
+            v = min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (ca != cb))
+            if prev2 is not None and i > 1 and j > 1 and ca == b[j - 2] and a[i - 2] == cb:
+                v = min(v, prev2[j - 2] + 1)
+            cur.append(v)
+        prev2, prev = prev, cur
+    return prev[-1]
+
+
+def _squash(name: str) -> str:
+    return re.sub(r"[-_.]+", "", name.lower())
+
+
+def _norm(ecosystem: str, name: str) -> str:
+    """Registry-accurate name: PyPI ignores case and treats - _ . alike; npm is exact (lowercase)."""
+    if ecosystem == "pypi":
+        return re.sub(r"[-_.]+", "-", name).lower()
+    return name.lower()
+
+
 def _is_conflation(candidate: str, popular_list: list[str]) -> Optional[tuple[str, str]]:
     """
-    Detect names that look like two real popular packages mashed together,
-    e.g. react-codeshift ~ jscodeshift + react-codemod.
-    Cheap heuristic: candidate contains a long prefix of one popular name
-    and a long suffix of another.
+    Names that glue a whole popular package name to the tail of another one,
+    e.g. react-codeshift = react + (js)codeshift. Needs a full popular name of
+    >= 4 chars at one end and a >= 5 char remainder that ends/starts another popular name.
     """
-    candidate_l = candidate.lower().replace("-", "").replace("_", "")
-    for p1 in popular_list:
-        p1_l = p1.lower().replace("-", "").replace("_", "")
-        if len(p1_l) < 4:
+    c = _squash(candidate)
+    squashed = [(p, _squash(p)) for p in popular_list]
+    for x, a in squashed:
+        if len(a) < 4 or len(c) - len(a) < 5:
             continue
-        if candidate_l.startswith(p1_l[: max(4, len(p1_l) // 2)]):
-            for p2 in popular_list:
-                if p2 == p1:
-                    continue
-                p2_l = p2.lower().replace("-", "").replace("_", "")
-                if len(p2_l) < 4:
-                    continue
-                if candidate_l.endswith(p2_l[-max(4, len(p2_l) // 2):]):
-                    return (p1, p2)
+        if c.startswith(a):                      # X + tail-of-Y
+            rest = c[len(a):]
+            for y, b in squashed:
+                if y != x and b != a and b.endswith(rest) and len(b) > len(rest):
+                    return (x, y)
+        if c.endswith(a):                        # head-of-Y + X
+            rest = c[: len(c) - len(a)]
+            for y, b in squashed:
+                if y != x and b != a and b.startswith(rest) and len(b) > len(rest):
+                    return (y, x)
     return None
 
 
@@ -92,6 +119,10 @@ class HallucinationEngine:
             self.known = json.load(f)
         with open(data_dir / "popular_packages.json") as f:
             self.popular = json.load(f)
+        self._popular_sets = {
+            eco: {_norm(eco, n) for n in names}
+            for eco, names in self.popular.items() if isinstance(names, list)
+        }
 
     def _known_incident(self, package_name: str, ecosystem: str) -> Optional[dict]:
         for entry in self.known.get(ecosystem, []):
@@ -112,35 +143,45 @@ class HallucinationEngine:
                 f"({incident['type']}): {incident['note']}"
             )
 
-        # Signal 2: package doesn't exist in the registry at all
-        if not meta.exists:
+        # Signal 2: registry unreachable vs package genuinely absent
+        if meta.raw_error:
+            score += 30
+            reasons.append(
+                f"Could not verify against the registry ({meta.raw_error}). Treated as "
+                "unverified, not as hallucinated; re-run to check."
+            )
+        elif not meta.exists:
             score += 35
             reasons.append(
                 "Package does not exist in the registry yet - if an AI assistant "
                 "suggested it, this is a hallucinated dependency waiting to be squatted."
             )
 
-        # Signal 3: typosquat / conflation similarity against popular packages
+        # Signal 3: typosquat / conflation (never applied to well-known packages themselves)
         popular_list = self.popular.get(meta.ecosystem, [])
-        conflation = _is_conflation(package_name, popular_list)
-        if conflation:
-            score += 30
-            reasons.append(
-                f"Name pattern looks like a conflation of '{conflation[0]}' and "
-                f"'{conflation[1]}' - a common AI hallucination pattern."
-            )
-        else:
-            best_match, best_ratio = None, 0.0
-            for p in popular_list:
-                r = similarity_ratio(package_name, p)
-                if r > best_ratio:
-                    best_match, best_ratio = p, r
-            if best_match and 0.75 <= best_ratio < 1.0:
-                score += 25
+        if _norm(meta.ecosystem, package_name) not in self._popular_sets.get(meta.ecosystem, set()):
+            conflation = _is_conflation(package_name, popular_list)
+            if conflation:
+                score += 30
                 reasons.append(
-                    f"Name is {best_ratio:.0%} similar to popular package '{best_match}' "
-                    "- possible typosquat."
+                    f"Name pattern looks like a conflation of '{conflation[0]}' and "
+                    f"'{conflation[1]}' - a common AI hallucination pattern."
                 )
+            else:
+                n = len(package_name)
+                allowed = 0 if n < 5 else (1 if n < 10 else 2)   # short names are too noisy to judge
+                hit = None
+                for pk in popular_list if allowed else ():
+                    if abs(len(pk) - n) <= allowed:
+                        d = edit_distance(package_name, pk)
+                        if 0 < d <= allowed and (hit is None or d < hit[1]):
+                            hit = (pk, d)
+                if hit:
+                    score += 25
+                    reasons.append(
+                        f"Name is {hit[1]} edit(s) away from popular package "
+                        f"'{hit[0]}' - possible typosquat."
+                    )
 
         # Signal 4: registry metadata red flags (only meaningful if it exists)
         if meta.exists:
