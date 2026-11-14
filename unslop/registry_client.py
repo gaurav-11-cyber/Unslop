@@ -14,7 +14,12 @@ No API keys needed - these are all public, unauthenticated endpoints.
 from __future__ import annotations
 
 import datetime as dt
+import hashlib
+import json
+import os
 import time
+from dataclasses import asdict
+from pathlib import Path
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -192,9 +197,48 @@ def _fetch_npm_downloads(package_name: str, session: requests.Session) -> Option
     return None
 
 
-def fetch_metadata(package_name: str, ecosystem: str, session: Optional[requests.Session] = None) -> PackageMetadata:
+def _fetch_uncached(package_name: str, ecosystem: str, session: Optional[requests.Session] = None) -> PackageMetadata:
     if ecosystem == "pypi":
         return fetch_pypi_metadata(package_name, session)
     if ecosystem == "npm":
         return fetch_npm_metadata(package_name, session)
     raise ValueError(f"Unsupported ecosystem: {ecosystem}")
+
+
+# ------------------------------------------------------------- cache ----
+# Small on-disk cache so repeated scans (pre-commit, CI re-runs) do not hammer the registries.
+# Only successful lookups are stored; errors never are. Disable with UNSLOP_NO_CACHE=1 or --no-cache.
+TTL_EXISTS = 6 * 3600      # a package that exists changes slowly
+TTL_MISSING = 30 * 60      # a missing name may get registered at any moment, so keep this short
+
+
+def _cache_file(package_name: str, ecosystem: str) -> Path:
+    base = os.environ.get("UNSLOP_CACHE_DIR")
+    root = Path(base) if base else Path.home() / ".cache" / "unslop"
+    return root / (hashlib.sha256(f"{ecosystem}:{package_name.lower()}".encode()).hexdigest()[:40] + ".json")
+
+
+def fetch_metadata(package_name: str, ecosystem: str, session: Optional[requests.Session] = None) -> PackageMetadata:
+    if os.environ.get("UNSLOP_NO_CACHE"):
+        return _fetch_uncached(package_name, ecosystem, session)
+    path = _cache_file(package_name, ecosystem)
+    try:
+        blob = json.loads(path.read_text(encoding="utf-8"))
+        meta = dict(blob["meta"])
+        ttl = TTL_EXISTS if meta["exists"] else TTL_MISSING
+        if 0 <= time.time() - blob["stored_at"] < ttl:
+            meta["fetched_at"] = dt.datetime.fromisoformat(meta["fetched_at"])
+            return PackageMetadata(**meta)
+    except (OSError, ValueError, KeyError, TypeError):
+        pass
+    result = _fetch_uncached(package_name, ecosystem, session)
+    if not result.raw_error:
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            record = {"stored_at": time.time(), "meta": {**asdict(result), "fetched_at": result.fetched_at.isoformat()}}
+            tmp = path.with_suffix(".tmp")
+            tmp.write_text(json.dumps(record), encoding="utf-8")
+            tmp.replace(path)
+        except OSError:
+            pass
+    return result

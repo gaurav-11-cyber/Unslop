@@ -5,7 +5,8 @@ Uses the engine's current default parameters. Needs network. Download-count look
 (pypistats.org / api.npmjs.org) may be blocked in some environments; when they are, the
 low-downloads signal is simply absent, which is noted in results.md.
 """
-import json, sys
+import json, os, sys
+os.environ.setdefault("UNSLOP_NO_CACHE", "1")   # evaluation must hit the registries
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
