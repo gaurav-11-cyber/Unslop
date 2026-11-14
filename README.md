@@ -95,3 +95,12 @@ Run the tests with `pip install pytest && pytest`.
   Supply Chain Attacks" (April 2026)
 - Aikido Security — `react-codeshift` incident writeup
 - ReversingLabs — PromptMink campaign attribution
+
+## Evaluation
+
+Measured on a held-out split of 600 legitimate and 600 malicious package names (PyPI + npm, seeded sample; malicious labels from OpenSSF malicious-packages). Full method, tables and limits: [`eval/results.md`](eval/results.md).
+
+- **False positives:** 0/300 PyPI and 0/300 npm lesser-known legitimate packages flagged (95% CI upper bound 1.3% each).
+- **Typosquat rule:** flags 8.7% of malicious PyPI names at a 2.3% false-positive rate (tuned on a separate dev split; tuning cut false positives from 5.7%).
+- **Not detected:** malicious packages that are still live and look ordinary (0/119 flagged). Unslop is not a general malware classifier. Its value is the incident corpus, the existence check for unregistered names, typosquat hints and recognising npm security placeholders.
+- **Unvalidated:** the conflation heuristic (0 recall on the sample) is kept only as a weak signal; no labelled set of AI-hallucinated names was available, so hallucination detection itself is not measured.
