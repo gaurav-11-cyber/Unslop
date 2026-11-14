@@ -53,9 +53,14 @@ def similarity_ratio(a: str, b: str) -> float:
     return 1.0 - (_levenshtein(a.lower(), b.lower()) / max_len)
 
 
-def edit_distance(a: str, b: str) -> int:
-    """Optimal-string-alignment distance: insert / delete / substitute / swap adjacent = 1 edit."""
+def edit_distance(a: str, b: str, limit: Optional[int] = None) -> int:
+    """
+    Optimal-string-alignment distance: insert / delete / substitute / swap adjacent = 1 edit.
+    With `limit`, stops early and returns limit + 1 once the distance must exceed it (much faster).
+    """
     a, b = a.lower(), b.lower()
+    if limit is not None and abs(len(a) - len(b)) > limit:
+        return limit + 1
     prev2, prev = None, list(range(len(b) + 1))
     for i, ca in enumerate(a, 1):
         cur = [i]
@@ -64,6 +69,8 @@ def edit_distance(a: str, b: str) -> int:
             if prev2 is not None and i > 1 and j > 1 and ca == b[j - 2] and a[i - 2] == cb:
                 v = min(v, prev2[j - 2] + 1)
             cur.append(v)
+        if limit is not None and min(cur) > limit and (prev2 is None or min(prev) > limit):
+            return limit + 1
         prev2, prev = prev, cur
     return prev[-1]
 
@@ -79,7 +86,8 @@ def _norm(ecosystem: str, name: str) -> str:
     return name.lower()
 
 
-def _is_conflation(candidate: str, popular_list: list[str]) -> Optional[tuple[str, str]]:
+def _is_conflation(candidate: str, popular_list: list[str], min_head: int = 4, min_rest: int = 5,
+                   top_k: Optional[int] = None) -> Optional[tuple[str, str]]:
     """
     Names that glue a whole popular package name to the tail of another one,
     e.g. react-codeshift = react + (js)codeshift. Needs a full popular name of
@@ -87,8 +95,9 @@ def _is_conflation(candidate: str, popular_list: list[str]) -> Optional[tuple[st
     """
     c = _squash(candidate)
     squashed = [(p, _squash(p)) for p in popular_list]
-    for x, a in squashed:
-        if len(a) < 4 or len(c) - len(a) < 5:
+    heads = squashed[:top_k] if top_k else squashed      # the whole-name part must be a top-K package
+    for x, a in heads:
+        if len(a) < min_head or len(c) - len(a) < min_rest:
             continue
         if c.startswith(a):                      # X + tail-of-Y
             rest = c[len(a):]
@@ -101,6 +110,26 @@ def _is_conflation(candidate: str, popular_list: list[str]) -> Optional[tuple[st
                 if y != x and b != a and b.startswith(rest) and len(b) > len(rest):
                     return (y, x)
     return None
+
+
+def _typosquat(name: str, popular_list: list[str], min_len: int = 5, two_edit_len: Optional[int] = 10,
+               top_k: Optional[int] = None) -> Optional[tuple[str, int]]:
+    """(popular name, edits) if `name` is 1 edit (or 2 for long names) from a popular package."""
+    n = len(name)
+    allowed = 0 if n < min_len else (1 if (two_edit_len is None or n < two_edit_len) else 2)
+    if not allowed:
+        return None
+    hit = None
+    for pk in popular_list[:top_k] if top_k else popular_list:
+        d = edit_distance(name, pk, limit=allowed)
+        if 0 < d <= allowed and (hit is None or d < hit[1]):
+            hit = (pk, d)
+    return hit
+
+
+# Rule parameters. Tuned on a dev split and checked on a held-out split: see eval/ and eval/results.md.
+CONFLATION_PARAMS = dict(min_head=4, min_rest=7, top_k=1000)
+TYPOSQUAT_PARAMS = dict(min_len=6, two_edit_len=None, top_k=None)
 
 
 @dataclass
@@ -144,6 +173,12 @@ class HallucinationEngine:
                 f"({incident['type']}): {incident['note']}"
             )
 
+        # Signal 1b: npm removed the original package as malware and left a placeholder behind
+        if meta.security_holding:
+            score += 70
+            reasons.append("npm replaced this package with a security-holding placeholder: the original "
+                           "package under this name was removed as malicious.")
+
         # Signal 2: registry unreachable vs package genuinely absent
         if meta.raw_error:
             score += 30
@@ -161,22 +196,15 @@ class HallucinationEngine:
         # Signal 3: typosquat / conflation (never applied to well-known packages themselves)
         popular_list = self.popular.get(meta.ecosystem, [])
         if _norm(meta.ecosystem, package_name) not in self._popular_sets.get(meta.ecosystem, set()):
-            conflation = _is_conflation(package_name, popular_list)
+            conflation = _is_conflation(package_name, popular_list, **CONFLATION_PARAMS)
             if conflation:
-                score += 30
+                score += 15   # weak evidence on its own (see eval/results.md); never a WARN by itself
                 reasons.append(
                     f"Name pattern looks like a conflation of '{conflation[0]}' and "
                     f"'{conflation[1]}' - a common AI hallucination pattern."
                 )
             else:
-                n = len(package_name)
-                allowed = 0 if n < 5 else (1 if n < 10 else 2)   # short names are too noisy to judge
-                hit = None
-                for pk in popular_list if allowed else ():
-                    if abs(len(pk) - n) <= allowed:
-                        d = edit_distance(package_name, pk)
-                        if 0 < d <= allowed and (hit is None or d < hit[1]):
-                            hit = (pk, d)
+                hit = _typosquat(package_name, popular_list, **TYPOSQUAT_PARAMS)
                 if hit:
                     score += 25
                     reasons.append(

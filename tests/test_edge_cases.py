@@ -67,3 +67,32 @@ def test_pypi_repo_found_even_when_homepage_listed_first():
 
     m = fetch_pypi_metadata("numpy", FakeSession())
     assert m.has_repository and "github.com" in m.repository_url
+
+
+def test_edit_distance_and_early_exit():
+    from unslop.heuristics import edit_distance, _typosquat
+    assert edit_distance("reqeusts", "requests") == 1          # adjacent swap
+    assert edit_distance("flask", "flasks") == 1 and edit_distance("abc", "xyz") == 3
+    assert edit_distance("abcdefgh", "zzzzzzzz", limit=2) == 3  # early exit returns limit + 1
+    assert _typosquat("reqeusts", ["requests", "flask"]) == ("requests", 1)
+    assert _typosquat("flsk", ["flask"]) is None                # too short to judge
+
+
+def test_npm_security_placeholder_is_recognised_and_blocked():
+    from unslop.registry_client import fetch_npm_metadata
+
+    class R:
+        def __init__(self, code, data=None): self.status_code, self._d = code, data or {}
+        def json(self): return self._d
+
+    class S:
+        def get(self, url, timeout=None):
+            if "registry.npmjs.org" in url:
+                return R(200, {"time": {"created": "2022-01-01T00:00:00Z"}, "versions": {"0.0.1-security": {}},
+                               "maintainers": [{"name": "npm"}], "repository": {"url": "git+https://github.com/npm/security-holder.git"}})
+            return R(404)
+
+    m = fetch_npm_metadata("evil-pkg", S())
+    assert m.security_holding
+    a = HallucinationEngine().assess("evil-pkg", m)
+    assert a.verdict == "block" and "security-holding" in " ".join(a.reasons)

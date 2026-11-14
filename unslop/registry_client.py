@@ -36,6 +36,7 @@ class PackageMetadata:
     maintainer_count: int = 0
     version_count: int = 0
     raw_error: Optional[str] = None
+    security_holding: bool = False   # npm replaced a malicious package with a '0.0.1-security' placeholder
     fetched_at: dt.datetime = field(default_factory=lambda: dt.datetime.now(dt.timezone.utc))
 
 
@@ -174,6 +175,7 @@ def fetch_npm_metadata(package_name: str, session: Optional[requests.Session] = 
         repository_url=repo_url,
         maintainer_count=len(maintainers),
         version_count=len(versions),
+        security_holding=bool(versions) and all(str(v).startswith("0.0.1-security") for v in versions),
     )
 
 
