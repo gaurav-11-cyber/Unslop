@@ -14,11 +14,13 @@ Exit codes (so CI can tell the cases apart):
 from __future__ import annotations
 
 import json
+import os
 import sys
 from pathlib import Path
 
 import click
 
+from .sarif import to_sarif
 from .docscan import is_doc_file, scan_doc
 from .gitdiff import GitError, added_packages
 from .heuristics import HallucinationEngine
@@ -55,12 +57,17 @@ def _fail(message: str) -> None:
               help="Write the full scan report as JSON to this path.")
 @click.option("--markdown", "md_out", type=click.Path(path_type=Path), default=None,
               help="Write a Markdown report (for a PR comment) to this path.")
+@click.option("--sarif", "sarif_out", type=click.Path(path_type=Path), default=None,
+              help="Write findings as SARIF 2.1.0 (for GitHub code scanning) to this path.")
+@click.option("--no-cache", is_flag=True, default=False, help="Do not read or write the local registry cache.")
 @click.option("--strict-docs", is_flag=True, default=False,
               help="In docs/scripts, keep BLOCK for unknown packages (default: downgrade to WARN).")
 @click.option("--fail-on-block/--no-fail-on-block", default=True,
               help="Exit with status 1 if any package is blocked (for CI gating).")
-def scan(manifests, base_ref, only, json_out, md_out, strict_docs, fail_on_block):
+def scan(manifests, base_ref, only, json_out, md_out, sarif_out, no_cache, strict_docs, fail_on_block):
     """Scan manifests (requirements.txt, package.json) and install commands in docs/scripts (.md, .sh, Dockerfile, CI YAML)."""
+    if no_cache:
+        os.environ["UNSLOP_NO_CACHE"] = "1"
     only_list = [x.strip() for x in only.split(",")] if only else None
     engine = HallucinationEngine()
     reports: list[ScanReport] = []
@@ -117,6 +124,9 @@ def scan(manifests, base_ref, only, json_out, md_out, strict_docs, fail_on_block
         }
         json_out.write_text(json.dumps(payload, indent=2, default=str), encoding="utf-8")
         click.echo(f"JSON report written to {json_out}")
+    if sarif_out:
+        sarif_out.write_text(json.dumps(to_sarif(reports), indent=2), encoding="utf-8")
+        click.echo(f"SARIF report written to {sarif_out}")
     if md_out:
         md_out.write_text(render_markdown(reports), encoding="utf-8")
         click.echo(f"Markdown report written to {md_out}")
