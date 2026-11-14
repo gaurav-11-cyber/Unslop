@@ -59,13 +59,13 @@ def read_at_ref(path: Path, ref: str) -> Optional[str]:
 def added_packages(manifest: Path, base_ref: str) -> list[str]:
     """Package names in `manifest` that are not in the same file at `base_ref`."""
     ecosystem = ecosystem_for(manifest)
-    head_names = parse_names(ecosystem, manifest.read_text(encoding="utf-8"))
+    head_names = parse_names(ecosystem, manifest.read_text(encoding="utf-8"), manifest.name)
 
     base_text = read_at_ref(manifest, base_ref)
     base_names: list[str] = []
     if base_text is not None:
         try:
-            base_names = parse_names(ecosystem, base_text)
+            base_names = parse_names(ecosystem, base_text, manifest.name)
         except ValueError:
             # Broken manifest on the base branch: treat everything as new (scan more, not less).
             base_names = []

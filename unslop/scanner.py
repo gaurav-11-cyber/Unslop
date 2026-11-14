@@ -56,8 +56,70 @@ def parse_package_json_text(text: str) -> list[str]:
     return names
 
 
+def parse_package_lock_text(text: str) -> list[str]:
+    """Package names from package-lock.json (lockfile v2/v3 `packages`, or v1 nested `dependencies`)."""
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError as e:
+        raise ValueError(f"invalid JSON: {e}") from e
+    if not isinstance(data, dict):
+        raise ValueError("package-lock.json must contain a JSON object")
+    names: list[str] = []
+    packages = data.get("packages")
+    if isinstance(packages, dict):
+        for key, info in packages.items():
+            if key and "node_modules/" in key and not (isinstance(info, dict) and info.get("link")):
+                names.append(key.rsplit("node_modules/", 1)[1])
+    else:
+        def walk(deps):
+            for name, info in (deps or {}).items():
+                names.append(name)
+                if isinstance(info, dict):
+                    walk(info.get("dependencies"))
+        walk(data.get("dependencies"))
+    return list(dict.fromkeys(names))
+
+
+def parse_pyproject_text(text: str) -> list[str]:
+    """Dependency names from pyproject.toml: PEP 621, PEP 735 dependency-groups and Poetry."""
+    try:
+        import tomllib
+    except ImportError as e:  # Python < 3.11
+        raise ValueError("pyproject.toml scanning needs Python 3.11+ (tomllib)") from e
+    try:
+        data = tomllib.loads(text)
+    except tomllib.TOMLDecodeError as e:
+        raise ValueError(f"invalid TOML: {e}") from e
+    specs: list[str] = []
+    project = data.get("project") or {}
+    specs += [x for x in project.get("dependencies") or [] if isinstance(x, str)]
+    for group in (project.get("optional-dependencies") or {}).values():
+        specs += [x for x in group if isinstance(x, str)]
+    for group in (data.get("dependency-groups") or {}).values():
+        specs += [x for x in group if isinstance(x, str)]
+    names = [re.split(r"[<>=!~\[;\s(@]", s.strip(), maxsplit=1)[0] for s in specs]
+    poetry = (data.get("tool") or {}).get("poetry") or {}
+    tables = [poetry.get("dependencies"), poetry.get("dev-dependencies")]
+    tables += [g.get("dependencies") for g in (poetry.get("group") or {}).values() if isinstance(g, dict)]
+    for table in tables:
+        if isinstance(table, dict):
+            names += [k for k in table if k.lower() != "python"]
+    return [n for n in dict.fromkeys(names) if n]
+
+
+def locate(text: str, name: str) -> int:
+    """1-based line of the first whole-token occurrence of `name` (1 if not found)."""
+    pat = re.compile(r"(?<![\w.-])" + re.escape(name) + r"(?![\w.-])", re.I)
+    for i, line in enumerate(text.splitlines(), 1):
+        if pat.search(line):
+            return i
+    return 1
+
+
 def ecosystem_for(path: Path) -> str:
     """'pypi' or 'npm', decided from the file name."""
+    if path.name == "pyproject.toml":
+        return "pypi"
     if path.suffix == ".json":
         return "npm"
     if path.suffix == ".txt" or "requirements" in path.name:
@@ -65,16 +127,16 @@ def ecosystem_for(path: Path) -> str:
     raise ValueError(f"Unsupported manifest file: {path.name}")
 
 
-def parse_names(ecosystem: str, text: str) -> list[str]:
+def parse_names(ecosystem: str, text: str, filename: str = "") -> list[str]:
     if ecosystem == "npm":
-        return parse_package_json_text(text)
-    return parse_requirements_text(text)
+        return parse_package_lock_text(text) if filename == "package-lock.json" else parse_package_json_text(text)
+    return parse_pyproject_text(text) if filename == "pyproject.toml" else parse_requirements_text(text)
 
 
 def detect_manifest(path: Path) -> tuple[str, list[str]]:
     """Returns (ecosystem, package_names) for a manifest file on disk."""
     ecosystem = ecosystem_for(path)
-    return ecosystem, parse_names(ecosystem, path.read_text(encoding="utf-8"))
+    return ecosystem, parse_names(ecosystem, path.read_text(encoding="utf-8"), path.name)
 
 
 @dataclass
@@ -126,7 +188,13 @@ def scan_manifest(
     if only_new is not None:
         wanted = {n.lower() for n in only_new}
         names = [n for n in names if n.lower() in wanted]
-    return scan_items(str(path), ecosystem, [(n, None) for n in names], engine)
+    report = scan_items(str(path), ecosystem, [(n, None) for n in names], engine)
+    flagged = report.blocked + report.warned
+    if flagged:                                    # point findings at a line in the file
+        text = path.read_text(encoding="utf-8", errors="replace")
+        for a in flagged:
+            a.location = a.location or f"{path}:{locate(text, a.package)}"
+    return report
 
 
 def scan_items(
@@ -146,15 +214,21 @@ def scan_items(
     report = ScanReport(manifest=label, ecosystem=ecosystem, total_packages=len(items))
     names = [n for n, _ in items]
 
-    valid = list(dict.fromkeys(n for n in names if VALID_NAME.match(n)))
+    def established(n: str) -> bool:   # top-5,000 package and not a documented incident: no lookup needed
+        return engine.is_popular(n, ecosystem) and engine._known_incident(n, ecosystem) is None
+
+    valid = list(dict.fromkeys(n for n in names if VALID_NAME.match(n) and not established(n)))
     with ThreadPoolExecutor(max_workers=8) as pool:  # registry calls are I/O bound
         metas = dict(zip(valid, pool.map(lambda n: fetch_metadata(n, ecosystem), valid)))
 
     for name, location in items:
-        if name not in metas:
-            assessment = _invalid_name_assessment(name, ecosystem)
-        else:
+        if name in metas:
             assessment = engine.assess(name, metas[name])
+        elif VALID_NAME.match(name):
+            assessment = RiskAssessment(package=name, ecosystem=ecosystem, risk_score=0, verdict="pass",
+                                        reasons=["Top-5,000 package by downloads; registry lookup skipped."])
+        else:
+            assessment = _invalid_name_assessment(name, ecosystem)
         assessment.location = location
         if docs and not strict_docs and assessment.verdict == "block" and assessment.known_incident is None:
             assessment.verdict = "warn"

@@ -160,6 +160,10 @@ class HallucinationEngine:
                 return entry
         return None
 
+    def is_popular(self, package_name: str, ecosystem: str) -> bool:
+        """True if the name is in the top-5,000 list for its registry (exact match after normalising)."""
+        return _norm(ecosystem, package_name) in self._popular_sets.get(ecosystem, set())
+
     def assess(self, package_name: str, meta: PackageMetadata) -> RiskAssessment:
         reasons: list[str] = []
         score = 0
