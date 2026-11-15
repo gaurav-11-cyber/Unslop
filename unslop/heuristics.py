@@ -204,8 +204,8 @@ class HallucinationEngine:
             if conflation:
                 score += 15   # weak evidence on its own (see eval/results.md); never a WARN by itself
                 reasons.append(
-                    f"Name pattern looks like a conflation of '{conflation[0]}' and "
-                    f"'{conflation[1]}' - a common AI hallucination pattern."
+                    f"Name resembles '{conflation[0]}' and '{conflation[1]}' joined together "
+                    "(weak signal; many legitimate packages look like this)."
                 )
             else:
                 hit = _typosquat(package_name, popular_list, **TYPOSQUAT_PARAMS)

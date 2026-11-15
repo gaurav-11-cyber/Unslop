@@ -176,6 +176,7 @@ def _parse_args(rest: str, ecosystem: str, family: str) -> list[str]:
 
 
 def extract_installs(text: str, path: Path) -> list[Install]:
+    text = text.removeprefix("\ufeff")
     found: dict[tuple[str, str, int], Install] = {}
     for line_no, code in _code_lines(text, _is_markdown(path)):
         for ecosystem, family, pattern in _COMMANDS:

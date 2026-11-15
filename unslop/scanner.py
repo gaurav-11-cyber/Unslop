@@ -32,7 +32,7 @@ def parse_requirements_text(text: str) -> list[str]:
     names = []
     for raw_line in text.splitlines():
         line = raw_line.split(" #", 1)[0].strip()
-        if not line or line.startswith(("#", "-")) or "://" in line:
+        if not line or line.startswith(("#", "-", ".", "/", "~", "file:")) or "://" in line:
             continue
         # "requests==2.31.0" -> "requests", "pkg[extra]>=1; python_version<'3.9'" -> "pkg"
         name = re.split(r"[<>=!~\[; ]", line, maxsplit=1)[0].strip()
@@ -49,7 +49,7 @@ def parse_package_json_text(text: str) -> list[str]:
     if not isinstance(data, dict):
         raise ValueError("package.json must contain a JSON object")
     names = []
-    for field_name in ("dependencies", "devDependencies"):
+    for field_name in ("dependencies", "devDependencies", "optionalDependencies", "peerDependencies"):
         section = data.get(field_name) or {}
         if isinstance(section, dict):
             names.extend(section.keys())
@@ -128,6 +128,7 @@ def ecosystem_for(path: Path) -> str:
 
 
 def parse_names(ecosystem: str, text: str, filename: str = "") -> list[str]:
+    text = text.removeprefix("\ufeff")          # UTF-8 byte-order mark written by some Windows editors
     if ecosystem == "npm":
         return parse_package_lock_text(text) if filename == "package-lock.json" else parse_package_json_text(text)
     return parse_pyproject_text(text) if filename == "pyproject.toml" else parse_requirements_text(text)

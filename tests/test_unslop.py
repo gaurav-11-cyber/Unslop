@@ -145,6 +145,6 @@ def test_scan_manifest_flags_invalid_name_without_network(tmp_path, monkeypatch)
         raise AssertionError("registry must not be called for invalid names")
     monkeypatch.setattr(scanner, "fetch_metadata", boom)
     f = tmp_path / "requirements.txt"
-    f.write_text("../../etc/passwd\n")
+    f.write_text("../../etc/passwd\nfoo/../bar\n")      # first is a local path (ignored), second is an invalid name
     report = scan_manifest(f)
-    assert [a.verdict for a in report.warned] == ["warn"]
+    assert [a.package for a in report.warned] == ["foo/../bar"] and report.total_packages == 1
