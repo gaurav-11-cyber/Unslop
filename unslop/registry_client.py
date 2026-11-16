@@ -29,6 +29,14 @@ USER_AGENT = "Unslop/0.1 (+https://github.com/gaurav-11-cyber/unslop)"
 TIMEOUT = 8  # seconds, keep scans fast enough for a CI gate
 
 
+def _timeout() -> float:
+    """Per-request timeout; override with UNSLOP_TIMEOUT (seconds, 1-60)."""
+    try:
+        return min(60.0, max(1.0, float(os.environ.get("UNSLOP_TIMEOUT", TIMEOUT))))
+    except ValueError:
+        return float(TIMEOUT)
+
+
 @dataclass
 class PackageMetadata:
     name: str
@@ -55,7 +63,7 @@ def _get(session: requests.Session, url: str, retries: int = 2) -> requests.Resp
     """GET with short backoff on timeouts, 429 and 5xx. Raises requests.RequestException if all tries fail."""
     for attempt in range(retries + 1):
         try:
-            resp = session.get(url, timeout=TIMEOUT)
+            resp = session.get(url, timeout=_timeout())
             if resp.status_code not in (429, 500, 502, 503, 504) or attempt == retries:
                 return resp
         except requests.RequestException:
@@ -128,7 +136,7 @@ def _fetch_pypi_downloads(package_name: str, session: requests.Session) -> Optio
     try:
         resp = session.get(
             f"https://pypistats.org/api/packages/{package_name}/recent",
-            timeout=TIMEOUT,
+            timeout=_timeout(),
         )
         if resp.status_code == 200:
             return resp.json().get("data", {}).get("last_week")
@@ -188,7 +196,7 @@ def _fetch_npm_downloads(package_name: str, session: requests.Session) -> Option
     try:
         resp = session.get(
             f"https://api.npmjs.org/downloads/point/last-week/{package_name}",
-            timeout=TIMEOUT,
+            timeout=_timeout(),
         )
         if resp.status_code == 200:
             return resp.json().get("downloads")

@@ -82,7 +82,7 @@ run("E35 unsupported extension", {"foo.xml": "<a/>"}, ["scan", "foo.xml"], 2, ["
 run("E36 one broken + one fine", {"package.json": "{bad", "requirements.txt": "requests\n"}, ["scan", "package.json", "requirements.txt"], 2, ["1 passed"])
 run("E37 no args", {}, ["scan"], 2)
 # ---- network & perf
-run("F38 registry unreachable", {"requirements.txt": "some-obscure-pkg-xyzzy-q\n"}, ["scan", "requirements.txt"], 0, ["Could not verify"], ["does not exist"], env={"HTTPS_PROXY": "http://127.0.0.1:9", "HTTP_PROXY": "http://127.0.0.1:9"}, timeout=60)
+run("F38 registry unreachable", {"requirements.txt": "some-obscure-pkg-xyzzy-q\n"}, ["scan", "requirements.txt"], 0, ["Could not verify"], ["does not exist"], env={"HTTPS_PROXY": "http://127.0.0.1:9", "HTTP_PROXY": "http://127.0.0.1:9", "UNSLOP_TIMEOUT": "2"}, timeout=90)
 names = [n for n in (Path(__file__).resolve().parent.parent / "eval" / "data" / "legit_pypi.txt").read_text().split("\n") if n][:150]
 run("F39 150 real packages (no cache)", {"requirements.txt": "\n".join(names) + "\n"}, ["scan", "requirements.txt"], None, ["packages checked: 150"], timeout=170)
 
