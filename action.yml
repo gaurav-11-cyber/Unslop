@@ -1,0 +1,141 @@
+name: "Unslop"
+description: "Block AI-hallucinated (slopsquatted) PyPI and npm dependencies in pull requests."
+author: "Gaurav Raj"
+branding:
+  icon: shield
+  color: red
+
+# Usage (the caller must check out with fetch-depth: 0 and grant pull-requests: write):
+#
+#   on: pull_request
+#   permissions: { contents: read, pull-requests: write, security-events: write }
+#   jobs:
+#     scan:
+#       runs-on: ubuntu-latest
+#       steps:
+#         - uses: actions/checkout@v4
+#           with: { fetch-depth: 0, persist-credentials: false }
+#         - uses: OWNER/REPO@v0.2.0
+
+inputs:
+  github-token:
+    description: "Token used to post the pull request comment."
+    default: ${{ github.token }}
+  comment:
+    description: "Post or update a pull request comment with the report."
+    default: "true"
+  fail-on-block:
+    description: "Fail the check when a package is blocked."
+    default: "true"
+  strict-docs:
+    description: "Keep BLOCK for unknown packages found in docs and scripts (default: downgrade to WARN)."
+    default: "false"
+  python-version:
+    description: "Python version used to run the scanner."
+    default: "3.12"
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-python@v5
+      with:
+        python-version: ${{ inputs.python-version }}
+
+    - name: Install
+      shell: bash
+      env:
+        ACTION_PATH: ${{ github.action_path }}
+      run: python -m pip install --quiet "$ACTION_PATH"
+
+    - name: Scan newly added dependencies
+      id: scan
+      shell: bash
+      env:
+        BASE_REF: ${{ github.base_ref }}
+        STRICT_DOCS: ${{ inputs.strict-docs }}
+      run: |
+        set +e
+        OUT="${RUNNER_TEMP:-/tmp}"
+        fail() { echo "::error::$1"; echo "exit_code=2" >> "$GITHUB_OUTPUT"; exit 0; }
+
+        [ -n "$BASE_REF" ] || fail "Unslop must run on pull_request events."
+        if ! git rev-parse --verify --quiet "origin/${BASE_REF}" > /dev/null; then
+          git fetch --no-tags --depth=50 origin "${BASE_REF}:refs/remotes/origin/${BASE_REF}" > /dev/null 2>&1
+        fi
+        git rev-parse --verify --quiet "origin/${BASE_REF}" > /dev/null \
+          || fail "Base branch origin/${BASE_REF} not found. Check out with fetch-depth: 0."
+
+        git diff -z --name-only --diff-filter=AM "origin/${BASE_REF}...HEAD" -- \
+          '*requirements*.txt' '*package.json' '*package-lock.json' '*pyproject.toml' \
+          '*.md' '*.mdx' '*.sh' '*.yml' '*.yaml' '*Dockerfile*' '*.cursorrules' \
+          ':(exclude)*node_modules/*' > "$OUT/unslop-files.bin" 2> "$OUT/unslop-diff.err" \
+          || fail "Could not diff against origin/${BASE_REF} (shallow clone? use fetch-depth: 0): $(head -c 300 "$OUT/unslop-diff.err")"
+
+        FILES=()
+        while IFS= read -r -d '' f; do FILES+=("$f"); done < "$OUT/unslop-files.bin"
+        if [ "${#FILES[@]}" -eq 0 ]; then
+          echo "No dependency manifests, docs or scripts changed."
+          echo "exit_code=0" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+
+        ARGS=(scan "${FILES[@]}" --base "origin/${BASE_REF}"
+              --markdown "$OUT/unslop-comment.md" --json "$OUT/unslop-report.json" --sarif "$OUT/unslop.sarif")
+        [ "$STRICT_DOCS" = "true" ] && ARGS+=(--strict-docs)
+        unslop "${ARGS[@]}"
+        echo "exit_code=$?" >> "$GITHUB_OUTPUT"
+
+        if [ -f "$OUT/unslop-comment.md" ]; then
+          echo "comment_file=$OUT/unslop-comment.md" >> "$GITHUB_OUTPUT"
+          cat "$OUT/unslop-comment.md" >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
+        fi
+        [ -f "$OUT/unslop.sarif" ] && echo "sarif_file=$OUT/unslop.sarif" >> "$GITHUB_OUTPUT"
+        exit 0
+
+    - name: Upload SARIF to code scanning
+      if: always() && steps.scan.outputs.sarif_file != '' && github.event.repository.private == false
+      continue-on-error: true   # needs a public repository or GitHub Advanced Security
+      uses: github/codeql-action/upload-sarif@v3
+      with:
+        sarif_file: ${{ steps.scan.outputs.sarif_file }}
+        category: unslop
+
+    - name: Post or update the pull request comment
+      if: always() && inputs.comment == 'true' && steps.scan.outputs.comment_file != ''
+      continue-on-error: true   # fork pull requests get a read-only token; the job summary still has the report
+      uses: actions/github-script@v7
+      env:
+        COMMENT_FILE: ${{ steps.scan.outputs.comment_file }}
+      with:
+        github-token: ${{ inputs.github-token }}
+        script: |
+          const fs = require('fs');
+          const body = fs.readFileSync(process.env.COMMENT_FILE, 'utf8');
+          const marker = '<!-- unslop-comment -->';
+          const { owner, repo } = context.repo;
+          const issue_number = context.issue.number;
+          const comments = await github.paginate(github.rest.issues.listComments, { owner, repo, issue_number });
+          const existing = comments.find(c => c.body && c.body.includes(marker));
+          if (existing) {
+            await github.rest.issues.updateComment({ owner, repo, comment_id: existing.id, body });
+          } else {
+            await github.rest.issues.createComment({ owner, repo, issue_number, body });
+          }
+
+    - name: Enforce the result
+      if: always()
+      shell: bash
+      env:
+        EXIT_CODE: ${{ steps.scan.outputs.exit_code }}
+        FAIL_ON_BLOCK: ${{ inputs.fail-on-block }}
+      run: |
+        code="${EXIT_CODE:-2}"
+        if [ "$code" = "2" ]; then
+          echo "::error::Unslop could not complete the scan. See the log above."
+          exit 1
+        fi
+        if [ "$code" = "1" ] && [ "$FAIL_ON_BLOCK" = "true" ]; then
+          echo "::error::Unslop blocked one or more dependencies. See the pull request comment or job summary."
+          exit 1
+        fi
+        exit 0
