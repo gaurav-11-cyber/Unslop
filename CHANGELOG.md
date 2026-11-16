@@ -8,7 +8,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Diff-based scanning: `--base <ref>` checks only packages added since a git ref (version bumps are not "new").
 - Scanning of install commands in Markdown (fenced and inline code), shell scripts, Dockerfiles and CI YAML.
 - `package-lock.json` (v1, v2, v3) and `pyproject.toml` (PEP 621, dependency groups, Poetry) support.
-- GitHub Actions workflow that comments on pull requests and fails the check on a block.
+- Reusable composite GitHub Action (`action.yml`): scans what a pull request adds, comments, uploads SARIF and fails the check on a block.
+- `UNSLOP_TIMEOUT` environment variable to bound registry request time.
+- `scripts/make_test_prs.sh` creates throwaway branches to test the Action with real pull requests.
 - Markdown, JSON and SARIF 2.1.0 output; file and line locations for findings.
 - On-disk registry cache (`--no-cache` to disable); retries and parallel lookups.
 - Recognition of npm `0.0.1-security` placeholders (the original package was removed as malicious).
