@@ -1,106 +1,140 @@
 # Unslop
 
-Catches **slopsquatted / AI-hallucinated package names** before they get installed.
+**Catch AI-hallucinated package names before they get installed.**
 
-## The problem
+[![Tests](https://github.com/gaurav-11-cyber/Unslop/actions/workflows/tests.yml/badge.svg)](https://github.com/gaurav-11-cyber/Unslop/actions/workflows/tests.yml)
+![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue)
+![License: MIT](https://img.shields.io/badge/license-MIT-green)
 
-AI coding assistants hallucinate package names that don't exist (~20% of
-AI-generated code samples, per a USENIX Security 2025 study). Attackers
-register those exact names on PyPI/npm with malware inside — a documented
-attack class called **slopsquatting**. Real incidents already exist:
-`react-codeshift` (a hallucinated conflation of `jscodeshift` +
-`react-codemod`) spread to 237 GitHub repos before a researcher defensively
-registered it himself. CISA and the NSA issued a joint advisory on AI-agent
-supply chain risk in early 2026. No mainstream SCA tool (Snyk, Dependabot,
-SonarQube) targets this specific attack class yet.
+Unslop is a command-line tool and GitHub Action that checks the dependencies a pull request **adds** and blocks the ones that look hallucinated or squatted, on PyPI and npm.
+
+## The problem in 30 seconds
+
+AI coding assistants sometimes suggest packages that do not exist. A 2025 USENIX Security study found roughly **1 in 5** package names suggested by code models were made up. Attackers can register those names with malware inside, and the next person who runs `pip install` or `npm install` on the AI's suggestion installs it. This attack is called **slopsquatting**, and it has already happened:
+
+- `huggingface-cli`: a researcher registered a harmless placeholder for a name AI tools kept suggesting. It got 30,000+ real downloads in three months.
+- `react-codeshift`: a name an AI invented by merging two real packages. It spread through 237 repositories via agent skill files before a researcher claimed it defensively.
+
+Most scanners look at the dependency file. These names also travel through READMEs, setup scripts, Dockerfiles, CI files and AI agent instruction files, so Unslop reads those too.
 
 ## What it does
 
-Scans `requirements.txt` / `package.json` for newly added dependencies and
-scores each one for slopsquatting risk using four signals:
+- **Scans only what a pull request adds**, so results stay short and relevant.
+- **Reads many file types:** `requirements.txt`, `package.json`, `package-lock.json`, `pyproject.toml`, plus `pip install` / `npm install` commands inside Markdown, shell scripts, Dockerfiles and CI YAML.
+- **Gives each new package a verdict** (PASS, WARN or BLOCK), a 0 to 100 risk score, and the reasons in plain words.
+- **Comments on the pull request** and fails the check on a BLOCK. It also writes JSON and SARIF (for GitHub code scanning).
 
-1. **Known-incident lookup** — matches against a corpus of documented
-   hallucinated/slopsquatted packages.
-2. **Existence check** — flags packages that don't exist in the registry at
-   all (a hallucinated name waiting to be squatted).
-3. **Typosquat / conflation similarity** — Levenshtein-based matching
-   against popular packages, plus a conflation detector for names that
-   look like two real packages mashed together (the `react-codeshift`
-   pattern).
-4. **Registry metadata red flags** — package age, weekly downloads,
-   linked source repo, maintainer count.
+Example output:
 
-Each package gets a 0-100 risk score and a `block` / `warn` / `pass`
-verdict, with the exact reasons spelled out — not just a red flag with no
-explanation.
+```text
+$ unslop scan package.json requirements.txt --base origin/main
+✗ BLOCK  react-codeshift  (risk: 90/100)
+✗ BLOCK  reqeusts         (risk: 60/100)
+✓ PASS   react            (risk: 0/100)
+Summary: 2 blocked, 0 warned, 1 passed.
+```
 
-## Usage
+## How it decides
+
+```mermaid
+flowchart LR
+    A[Pull request] --> B[Find newly added packages]
+    B --> C{In the top 5,000?}
+    C -- yes --> P[PASS]
+    C -- no --> D[Look up PyPI / npm]
+    D --> E[Score the signals]
+    E --> F[PASS / WARN / BLOCK]
+    F --> G[PR comment, JSON, SARIF, exit code]
+```
+
+| Signal | What it means |
+|---|---|
+| Documented incident | The name is in a small, sourced list of known cases |
+| Does not exist | A hallucinated name that nobody has registered yet |
+| Typosquat | One character away from a popular package (for example `reqeusts`) |
+| npm security placeholder | npm removed the original package as malware |
+| Registry metadata | Very new, few downloads, no source repository, one maintainer |
+| Name resembles two packages | Weak hint only; never a warning on its own |
+
+Registry outages are reported as "could not verify", never as "does not exist".
+
+## Quick start
+
+Requires Python 3.11 or newer.
 
 ```bash
-pip install -e .
-unslop scan requirements.txt package.json              # scan everything listed
-unslop scan requirements.txt --base origin/main        # only packages ADDED since origin/main
-unslop scan package.json --json report.json --markdown comment.md
+pip install git+https://github.com/gaurav-11-cyber/Unslop.git
+
+unslop scan requirements.txt                        # scan a whole file
+unslop scan package.json --base origin/main         # only packages added since main
+unslop scan README.md SKILL.md                      # install commands in docs and agent files
 ```
 
-Exit codes: `0` nothing blocked, `1` at least one package blocked, `2` Unslop could not run
-(bad git ref, unreadable manifest).
+Useful options: `--markdown FILE`, `--json FILE`, `--sarif FILE`, `--only a,b`, `--strict-docs`, `--no-cache`, `--no-fail-on-block`.
+Exit codes: `0` nothing blocked, `1` a package was blocked, `2` the scan could not run.
 
-## GitHub Action
+### Use it as a GitHub Action
 
-`.github/workflows/unslop.yml` runs on every pull request that touches a
-`requirements*.txt` or `package.json`. It scans only the packages the PR adds,
-posts (or updates) one PR comment with the findings, writes the same report to
-the job summary, and fails the check if anything is blocked.
-
-Design notes: it uses `pull_request` (not `pull_request_target`) so code from
-forks never runs with secrets; the base branch name is passed through `env`, not
-interpolated into the script; package names from the PR are sanitised before they
-are printed, because the PR author controls them. On fork PRs the token is
-read-only, so the comment step is skipped and the job summary carries the report.
-
-## Project layout
-
-```
-unslop/
-  unslop/
-    registry_client.py   # PyPI + npm registry API calls
-    heuristics.py        # risk scoring engine
-    scanner.py           # manifest parsing + orchestration
-    gitdiff.py           # which packages are new compared to a git ref
-    report.py            # Markdown output for PR comments
-    cli.py               # command-line interface
-    data/
-      known_hallucinations.json   # corpus of documented incidents
-      popular_packages.json       # comparison set for typosquat detection
-  tests/
-    test_unslop.py                              # offline tests (registry calls are faked)
-    demo_requirements.txt, demo_package.json    # demo fixtures
-  .github/workflows/unslop.yml                  # PR check
+```yaml
+name: Unslop
+on: pull_request
+permissions:
+  contents: read
+  pull-requests: write
+  security-events: write
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: gaurav-11-cyber/Unslop@v0.2.0
 ```
 
-Run the tests with `pip install pytest && pytest`.
+It uses `pull_request`, not `pull_request_target`, so code from forks never runs with your secrets. Inputs: `comment`, `fail-on-block`, `strict-docs`, `python-version`.
 
-## Roadmap
+## How well does it work?
 
-- Web dashboard (scan history, org-wide risk visibility)
-- Multi-registry support (crates.io, Go modules)
-- Community-reported hallucination corpus
-- Real-time monitoring for AI coding agent sessions
+Measured on a held-out split of 600 legitimate and 600 malicious package names (PyPI and npm). Malicious labels come from the OpenSSF malicious-packages repository; rule settings were tuned on a separate dev split.
 
-## Sources
+| Check | Result |
+|---|---|
+| Lesser-known legitimate packages wrongly flagged | **0 of 600** (95% confidence interval up to 1.3% per ecosystem) |
+| Typosquat rule, malicious PyPI names | catches 8.7% at a 2.3% false-positive rate |
+| Typosquat rule, malicious npm names | 0% (the sample is mostly random spam names, not typosquats) |
+| Malicious packages that are still live and look ordinary | **0 of 119 flagged** |
 
-- USENIX Security 2025 — hallucinated package name taxonomy study
-- Cloud Security Alliance — "Slopsquatting: AI Code Hallucinations Fuel
-  Supply Chain Attacks" (April 2026)
-- Aikido Security — `react-codeshift` incident writeup
-- ReversingLabs — PromptMink campaign attribution
+**Honest reading:** Unslop is a low-noise gate for hallucinated and squatted names. It is **not** a general malware scanner. Details, method and limits are in [`eval/results.md`](eval/results.md).
 
-## Evaluation
+## Limits
 
-Measured on a held-out split of 600 legitimate and 600 malicious package names (PyPI + npm, seeded sample; malicious labels from OpenSSF malicious-packages). Full method, tables and limits: [`eval/results.md`](eval/results.md).
+- "Malicious" is not the same as "AI-hallucinated". No labelled set of hallucinated names was available, so that claim rests on the existence check and the incident list, and is not measured.
+- Scores and weights are set by judgment, not fitted. The "resembles two packages" rule showed no recall on the sample and is kept as a weak hint.
+- A registry outage means a warning, not a block, so a gate that cannot reach PyPI lets packages through.
+- Top-5,000 packages are trusted by name and skip lookups. A hijacked popular package is out of scope.
 
-- **False positives:** 0/300 PyPI and 0/300 npm lesser-known legitimate packages flagged (95% CI upper bound 1.3% each).
-- **Typosquat rule:** flags 8.7% of malicious PyPI names at a 2.3% false-positive rate (tuned on a separate dev split; tuning cut false positives from 5.7%).
-- **Not detected:** malicious packages that are still live and look ordinary (0/119 flagged). Unslop is not a general malware classifier. Its value is the incident corpus, the existence check for unregistered names, typosquat hints and recognising npm security placeholders.
-- **Unvalidated:** the conflation heuristic (0 recall on the sample) is kept only as a weak signal; no labelled set of AI-hallucinated names was available, so hallucination detection itself is not measured.
+## Related work
+
+Other open-source projects tackle slopsquatting, including two named SlopGuard (a Ruby one by Aditya Tiwari and a Python one), plus commercial tools such as Socket and Snyk. Unslop's emphasis is a diff-based pull request gate, scanning of docs and agent files, and a published evaluation with stated limits.
+
+## Development
+
+```bash
+git clone https://github.com/gaurav-11-cyber/Unslop.git && cd Unslop
+python3 -m venv venv && source venv/bin/activate
+pip install -e ".[dev]"
+pytest -q                      # 65 offline tests
+python scripts/e2e_cli.py      # 39 end-to-end cases against the real registries
+```
+
+```text
+unslop/         scanner, scoring rules, registry client, docs parser, SARIF and report output
+action.yml      reusable GitHub Action
+eval/           labelled datasets, evaluation scripts, results
+scripts/        end-to-end tests, comparison-list builder, test-PR helper
+tests/          unit tests, including the Action's shell step
+```
+
+See [CHANGELOG.md](CHANGELOG.md) and [SECURITY.md](SECURITY.md). Licensed under the [MIT License](LICENSE).
