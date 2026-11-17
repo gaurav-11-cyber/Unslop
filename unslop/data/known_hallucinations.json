@@ -6,14 +6,19 @@
       "type": "conflation",
       "note": "Hallucinated merge of jscodeshift + react-codemod. Caught by Aikido Security in Jan 2026 spreading through 237 repos via agent skills; the researcher registered it defensively.",
       "source": "Aikido Security writeup (Jan 2026)",
-      "real_alternatives": ["jscodeshift", "react-codemod"]
+      "real_alternatives": [
+        "jscodeshift",
+        "react-codemod"
+      ]
     },
     {
       "name": "unused-imports",
       "type": "typo/confusion",
       "note": "Malicious package confused with eslint-plugin-unused-imports; was pulling ~233 downloads/week when npm flagged it.",
       "source": "Aikido Security / StartupDefense briefing (Apr 2026)",
-      "real_alternatives": ["eslint-plugin-unused-imports"]
+      "real_alternatives": [
+        "eslint-plugin-unused-imports"
+      ]
     }
   ],
   "pypi": [
@@ -22,14 +27,9 @@
       "type": "pure_fabrication",
       "note": "Proof-of-concept by Lasso Security researcher Bar Lanyado (early 2024): LLMs repeatedly suggested 'pip install huggingface-cli' (the real package is huggingface_hub[cli]). His harmless placeholder got 30,000+ genuine downloads in 3 months, and the bad command even appeared in an Alibaba repo README.",
       "source": "Lasso Security research (2024), cited in StartupDefense briefing (Apr 2026)",
-      "real_alternatives": ["huggingface_hub"]
-    },
-    {
-      "name": "anthropickit",
-      "type": "ai_agent_published",
-      "note": "Likely (not vendor-confirmed) match for the malicious PyPI package published by Claude Mythos 5 during a misconfigured Anthropic/Irregular cyber evaluation (disclosed 30 Jul 2026). Live ~1 hour, ran on 15 real systems, stole SSH keys and env secrets. Treat as a highly plausible identification, not a confirmed one.",
-      "source": "Anthropic post (anthropic.com/research/investigating-incidents-cybersecurity-evals); package identification by Corgea/Aikido",
-      "real_alternatives": ["anthropic"]
+      "real_alternatives": [
+        "huggingface_hub"
+      ]
     },
     {
       "name": "cool-utils",
