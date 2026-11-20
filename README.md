@@ -34,6 +34,14 @@ $ unslop scan package.json requirements.txt --base origin/main
 Summary: 2 blocked, 0 warned, 1 passed.
 ```
 
+A pull request comment from the Action, blocking an install command found in an agent skill file:
+
+![Unslop comment on a pull request that adds an install command to an agent skill file](docs/images/pr-comment-docs.png)
+
+A pull request that only adds well-known packages passes without noise:
+
+![Unslop comment on a pull request that adds only popular packages](docs/images/pr-comment-clean.png)
+
 ## How it decides
 
 ```mermaid
