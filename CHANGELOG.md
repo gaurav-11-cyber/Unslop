@@ -2,6 +2,22 @@
 
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.3.0] - 2026-11-21
+
+Unslop is now a CI/CD security gate: slopsquatting detection plus vulnerabilities, secrets, an SBOM and a policy.
+
+### Added
+- `unslop gate`: one run that checks new dependencies, known vulnerabilities, secrets in added lines, writes an SBOM, applies a policy and returns one exit code.
+- Known-vulnerability check for exactly pinned dependencies against OSV.dev, with severity from the advisory or computed from its CVSS v3 vector.
+- Secret scanning of the lines a pull request adds (cloud, source-host, chat, payment and package-registry token formats, private keys, and a generic credential rule that only warns). Values are never printed; findings carry a fingerprint.
+- CycloneDX 1.5 SBOM (`unslop sbom`, and `--sbom` on the gate), attached to the workflow run by the Action.
+- Policy file `unslop.toml`: severity threshold, secret and slopsquat switches, `fail_on_error`, and waivers that need a reason and can expire. See `unslop.example.toml`.
+- SARIF rules for vulnerable dependencies and secrets; the Action posts one combined comment.
+- Dependency versions are parsed from requirements files, `package.json`, lockfiles and `pyproject.toml`.
+
+### Changed
+- The Action now runs the gate on every pull request (the path filter was removed so secrets are always checked) and stays quiet when there is nothing to report.
+
 ## [0.2.0] - 2026-11-15
 
 ### Added
