@@ -20,9 +20,14 @@ from pathlib import Path
 
 import click
 
+from . import __version__
 from .sarif import to_sarif
 from .docscan import is_doc_file, scan_doc
+from .deps import manifest_deps
+from .gate import render_gate_markdown, run_gate, to_json
 from .gitdiff import GitError, added_packages
+from .policy import PolicyError, load_policy
+from .sbom import build_sbom
 from .heuristics import HallucinationEngine
 from .report import render_markdown, safe_name, safe_location
 from .scanner import ScanReport, scan_manifest, ecosystem_for
@@ -37,6 +42,7 @@ def _plain(text: str) -> str:
 
 
 @click.group()
+@click.version_option(__version__, prog_name="unslop")
 def main():
     """Unslop - catch AI-hallucinated (slopsquatted) package names before they get installed."""
     pass
@@ -71,6 +77,7 @@ def scan(manifests, base_ref, only, json_out, md_out, sarif_out, no_cache, stric
     only_list = [x.strip() for x in only.split(",")] if only else None
     engine = HallucinationEngine()
     reports: list[ScanReport] = []
+    errors: list[tuple[str, str]] = []   # files that could not be scanned; the rest are still scanned
 
     for manifest in manifests:
         try:
@@ -92,8 +99,9 @@ def scan(manifests, base_ref, only, json_out, md_out, sarif_out, no_cache, stric
             reports.append(scan_manifest(manifest, engine=engine, only_new=names))
         except GitError as e:
             _fail(str(e))
-        except ValueError as e:
-            _fail(f"{manifest}: {e}")
+        except (ValueError, OSError) as e:
+            errors.append((str(manifest), str(e)))
+            click.secho(f"Error: {_plain(str(manifest))}: {_plain(str(e))}", fg="red", err=True)
 
     click.echo()
     for report in reports:
@@ -115,12 +123,14 @@ def scan(manifests, base_ref, only, json_out, md_out, sarif_out, no_cache, stric
     warned = sum(len(r.warned) for r in reports)
     passed = sum(len(r.passed) for r in reports)
     click.echo("-" * 60)
-    click.echo(f"Summary: {blocked} blocked, {warned} warned, {passed} passed.")
+    click.echo(f"Summary: {blocked} blocked, {warned} warned, {passed} passed."
+               + (f" {len(errors)} file(s) could not be scanned." if errors else ""))
 
     if json_out:
         payload = {
             "summary": {"blocked": blocked, "warned": warned, "passed": passed},
             "reports": [r.to_dict() for r in reports],
+            "errors": [{"file": f, "error": m} for f, m in errors],
         }
         json_out.write_text(json.dumps(payload, indent=2, default=str), encoding="utf-8")
         click.echo(f"JSON report written to {json_out}")
@@ -128,14 +138,100 @@ def scan(manifests, base_ref, only, json_out, md_out, sarif_out, no_cache, stric
         sarif_out.write_text(json.dumps(to_sarif(reports), indent=2), encoding="utf-8")
         click.echo(f"SARIF report written to {sarif_out}")
     if md_out:
-        md_out.write_text(render_markdown(reports), encoding="utf-8")
+        md_out.write_text(render_markdown(reports, errors), encoding="utf-8")
         click.echo(f"Markdown report written to {md_out}")
 
     if fail_on_block and blocked:
         click.secho("\nBuild gate: FAILED (blocked packages found)", fg="red", bold=True)
         sys.exit(1)
+    if errors:
+        click.secho(f"\nBuild gate: FAILED ({len(errors)} file(s) could not be scanned)", fg="red", bold=True)
+        sys.exit(2)
     click.secho("\nBuild gate: PASSED", fg="green", bold=True)
 
+
+@main.command()
+@click.argument("files", nargs=-1, type=click.Path(exists=True, path_type=Path))
+@click.option("--base", "base_ref", default=None, help="Git ref to compare against (only what changed is checked; needed for the secret scan).")
+@click.option("--policy", "policy_path", type=click.Path(path_type=Path), default=None, help="Policy file (default: unslop.toml if it exists).")
+@click.option("--markdown", "md_out", type=click.Path(path_type=Path), default=None, help="Write the pull request comment here.")
+@click.option("--json", "json_out", type=click.Path(path_type=Path), default=None, help="Write the full result as JSON here.")
+@click.option("--sarif", "sarif_out", type=click.Path(path_type=Path), default=None, help="Write SARIF 2.1.0 here.")
+@click.option("--sbom", "sbom_out", type=click.Path(path_type=Path), default=None, help="Write a CycloneDX SBOM of the scanned manifests here.")
+@click.option("--github-output", "gh_out", type=click.Path(path_type=Path), default=None, help="Append findings=, scanned= and blocked= for GitHub Actions.")
+@click.option("--strict-docs", is_flag=True, default=False, help="Keep BLOCK for unknown packages found in docs and scripts.")
+@click.option("--no-vulns", is_flag=True, default=False, help="Skip the OSV vulnerability lookup.")
+@click.option("--no-cache", is_flag=True, default=False, help="Do not read or write the local registry cache.")
+def gate(files, base_ref, policy_path, md_out, json_out, sarif_out, sbom_out, gh_out, strict_docs, no_vulns, no_cache):
+    """CI/CD security gate: new dependencies (slopsquatting), known vulnerabilities, secrets in added lines, SBOM, policy.
+
+    Exit codes: 0 passed, 1 blocked by policy, 2 could not run (or lookups failed and the policy says fail_on_error)."""
+    if no_cache:
+        os.environ["UNSLOP_NO_CACHE"] = "1"
+    try:
+        policy = load_policy(policy_path or (Path("unslop.toml") if Path("unslop.toml").exists() else None))
+        res = run_gate(list(files), base_ref, policy, strict_docs=strict_docs, skip_vulns=no_vulns)
+    except (PolicyError, GitError) as e:
+        _fail(str(e))
+        return
+    click.echo("Unslop CI/CD security gate")
+    click.echo("-" * 60)
+    for rep in res.reports:
+        for group, items in (("block", rep.blocked), ("warn", rep.warned)):
+            for a in items:
+                click.secho(f"{VERDICT_ICON[group]}  {safe_name(a.package)} ({a.ecosystem}, risk {a.risk_score}/100)"
+                            + (f"  at {safe_location(a.location)}" if a.location else ""), fg=VERDICT_COLOR[group], bold=True)
+    for v in res.vulns:
+        click.secho(f"VULN  {safe_name(v.package)} {safe_name(v.version)}  {safe_name(v.id)}  [{v.severity}]"
+                    + (f"  fixed in {', '.join(v.fixed_in)}" if v.fixed_in else ""), fg="red" if v.severity in ("critical", "high") else "yellow")
+    for sf in res.secrets:
+        click.secho(f"SECRET  {sf.name} at {safe_location(f'{sf.file}:{sf.line}')}  {sf.preview}  [waiver id: secret:{sf.fingerprint}]",
+                    fg="red" if sf.severity == "block" else "yellow")
+    for note in res.notes:
+        click.echo(f"note: {note}")
+    for err in res.errors:
+        click.secho(f"error: {_plain(err)}", fg="yellow", err=True)
+    click.echo("-" * 60)
+    click.echo(f"dependencies checked: {res.scanned} | pinned dependencies checked for vulnerabilities: {res.deps_checked} | "
+               f"vulnerabilities: {len(res.vulns)} | secrets: {len(res.secrets)} | SBOM components: {len(res.sbom.get('components', []))}")
+    for w in res.waived:
+        click.echo(f"waived: {w}")
+    outputs = [(md_out, render_gate_markdown(res)), (json_out, json.dumps(to_json(res), indent=2)),
+               (sarif_out, json.dumps(to_sarif(res.reports, res.vulns, res.secrets), indent=2)), (sbom_out, json.dumps(res.sbom, indent=2))]
+    for target, text in outputs:
+        if target:
+            target.write_text(text, encoding="utf-8")
+    if gh_out:
+        with gh_out.open("a", encoding="utf-8") as fh:
+            fh.write(f"findings={res.findings}\nscanned={res.scanned}\nblocked={'true' if res.blockers else 'false'}\n")
+    if res.blockers:
+        click.secho("Decision: BLOCKED", fg="red", bold=True)
+        for b in res.blockers:
+            click.echo(f"  - {_plain(b)}")
+        sys.exit(1)
+    if res.errors and policy.fail_on_error:
+        click.secho("Decision: FAILED (lookups did not complete and fail_on_error is set)", fg="red", bold=True)
+        sys.exit(2)
+    click.secho("Decision: PASSED", fg="green", bold=True)
+
+
+@main.command()
+@click.argument("manifests", nargs=-1, required=True, type=click.Path(exists=True, path_type=Path))
+@click.option("--output", "-o", type=click.Path(path_type=Path), default=Path("sbom.cdx.json"), show_default=True)
+def sbom(manifests, output):
+    """Write a CycloneDX 1.5 SBOM for dependency files (requirements.txt, package.json, package-lock.json, pyproject.toml)."""
+    by_file, bad = {}, 0
+    for m in manifests:
+        try:
+            by_file[str(m)] = manifest_deps(m)
+        except (ValueError, OSError) as e:
+            bad += 1
+            click.secho(f"Error: {_plain(str(m))}: {_plain(str(e))}", fg="red", err=True)
+    doc = build_sbom(by_file)
+    output.write_text(json.dumps(doc, indent=2), encoding="utf-8")
+    click.echo(f"{len(doc['components'])} components written to {output}")
+    if bad:
+        sys.exit(2)
 
 if __name__ == "__main__":
     main()
