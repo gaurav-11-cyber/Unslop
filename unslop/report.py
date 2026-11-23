@@ -37,17 +37,26 @@ def _cell(text: str) -> str:
     return text.replace("|", "\\|").replace("\n", " ")
 
 
-def render_markdown(reports: list[ScanReport]) -> str:
+def _safe_msg(text: str, limit: int = 200) -> str:
+    return re.sub(r"[^A-Za-z0-9 .,:;()'/_=-]", "?", text)[:limit]
+
+
+def render_markdown(reports: list[ScanReport], errors: "list[tuple[str, str]] | None" = None) -> str:
     blocked = sum(len(r.blocked) for r in reports)
     warned = sum(len(r.warned) for r in reports)
     passed = sum(len(r.passed) for r in reports)
     checked = blocked + warned + passed
 
     lines = [COMMENT_MARKER, "## Unslop dependency check", ""]
+    err_lines = []
+    if errors:
+        err_lines = ["", "### Could not scan", ""]
+        err_lines += [f"- `{safe_location(f)}`: {_safe_msg(m)}" for f, m in errors]
+        err_lines.append("")
 
     if checked == 0:
         lines.append("No new packages were added in this change, so nothing was scanned.")
-        return "\n".join(lines) + "\n"
+        return "\n".join(lines + err_lines) + "\n"
 
     if blocked:
         lines.append(f"**{blocked} blocked**, {warned} warned, {passed} passed "
@@ -79,4 +88,4 @@ def render_markdown(reports: list[ScanReport]) -> str:
 
     lines.append("_Unslop checks new dependencies for AI-hallucinated (slopsquatted) names. "
                  "A warning is a signal to verify the package, not proof of malware._")
-    return "\n".join(lines) + "\n"
+    return "\n".join(lines + err_lines) + "\n"
