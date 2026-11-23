@@ -1,0 +1,13 @@
+# Copy to unslop.toml. Every key is optional; the values below are the defaults.
+[policy]
+block_on_vulnerability = "high"   # none | low | medium | high | critical (unknown severity never blocks)
+block_on_secret = true            # high-confidence secret formats; the generic credential rule only warns
+block_on_slopsquat = true         # BLOCK verdicts from the name and registry checks
+fail_on_error = false             # true: a failed lookup (registry, OSV) exits with code 2 instead of passing
+
+# A waiver needs a reason and should have an expiry date. The id is one of:
+#   a vulnerability id or alias (GHSA-xxxx, CVE-xxxx), "secret:<fingerprint>" (shown in the report), or "pkg:pypi:name" / "pkg:npm:name".
+# [[waiver]]
+# id = "CVE-2018-18074"
+# reason = "not reachable: we never follow redirects"
+# expires = 2026-12-31
