@@ -86,8 +86,12 @@ run("F38 registry unreachable", {"requirements.txt": "some-obscure-pkg-xyzzy-q\n
 names = [n for n in (Path(__file__).resolve().parent.parent / "eval" / "data" / "legit_pypi.txt").read_text().split("\n") if n][:150]
 run("F39 150 real packages (no cache)", {"requirements.txt": "\n".join(names) + "\n"}, ["scan", "requirements.txt"], None, ["packages checked: 150"], timeout=170)
 
+# ---- gate (these two call the real OSV.dev API)
+run("G40 known vulnerability blocks", {"requirements.txt": "requests==2.19.0\n"}, ["gate", "requirements.txt"], 1, ["VULN  requests 2.19.0", "Decision: BLOCKED"], env={"UNSLOP_SKIP_VULNS": ""}, timeout=90)
+run("G41 policy can allow it", {"requirements.txt": "requests==2.19.0\n", "unslop.toml": '[policy]\nblock_on_vulnerability = "none"\n'}, ["gate", "requirements.txt"], 0, ["VULN  requests 2.19.0", "Decision: PASSED"], env={"UNSLOP_SKIP_VULNS": ""}, timeout=90)
+
 bad = [r for r in results if not r[1]]
 for n, ok, probs, out, secs in results: print(("PASS" if ok else "FAIL"), n, f"({secs}s)", "" if ok else probs)
 print(f"\n{len(results) - len(bad)}/{len(results)} passed")
-sys.exit(1 if bad else 0)
 for n, ok, probs, out, secs in bad: print("\n=====", n, probs, "\n" + out[-700:])
+sys.exit(1 if bad else 0)

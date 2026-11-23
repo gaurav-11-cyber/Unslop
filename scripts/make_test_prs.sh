@@ -6,7 +6,7 @@
 set -euo pipefail
 
 cmd="${1:-}"
-branches="test/pr-manifest test/pr-npm-incident test/pr-docs test/pr-docs-unknown test/pr-lockfile test/pr-pyproject test/pr-clean test/pr-unrelated"
+branches="test/pr-secret test/pr-vuln test/pr-manifest test/pr-npm-incident test/pr-docs test/pr-docs-unknown test/pr-lockfile test/pr-pyproject test/pr-clean test/pr-unrelated"
 
 [ "$cmd" = create ] || [ "$cmd" = cleanup ] || { echo "usage: $0 create|cleanup"; exit 2; }
 [ -z "$(git status --porcelain)" ] || { echo "working tree is not clean"; exit 1; }
@@ -35,7 +35,10 @@ make_branch() {   # name, file, content, message
   echo "  $1  ->  $base_url/compare/main...$1?expand=1"
 }
 
+aws="AKIA""ABCDEFGH12345678"       # assembled here so this script never contains a scannable secret
 echo "Pushing test branches (open one PR per branch, base = main):"
+make_branch test/pr-secret examples/settings.py "AWS_ACCESS_KEY_ID = \"$aws\"" "test: fake cloud key in an added line (expect BLOCK, value hidden)"
+make_branch test/pr-vuln examples/requirements.txt 'requests==2.19.0' "test: pinned version with known vulnerabilities (expect BLOCK, needs network access to OSV)"
 make_branch test/pr-manifest     examples/requirements.txt 'requests
 reqeusts' "test: typosquat in requirements.txt (expect BLOCK, check fails)"
 make_branch test/pr-npm-incident examples/package.json '{"dependencies": {"react-codeshift": "1.0.0"}}' "test: documented incident in package.json (expect BLOCK)"

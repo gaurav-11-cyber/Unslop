@@ -62,7 +62,7 @@ def run_step(repo, tmp_path, base_ref="main", strict=""):
     out.write_text(""); summary.write_text("")
     env = {**os.environ, "BASE_REF": base_ref, "STRICT_DOCS": strict, "RUNNER_TEMP": str(tmp_path),
            "GITHUB_OUTPUT": str(out), "GITHUB_STEP_SUMMARY": str(summary),
-           "UNSLOP_NO_CACHE": "1", "UNSLOP_TIMEOUT": "1",
+           "UNSLOP_NO_CACHE": "1", "UNSLOP_TIMEOUT": "1", "UNSLOP_SKIP_VULNS": "1",
            "PATH": str(Path(sys.executable).parent) + os.pathsep + os.environ["PATH"]}
     subprocess.run(["bash", "-c", scan_script()], cwd=repo, env=env, capture_output=True, timeout=120)
     return dict(line.split("=", 1) for line in out.read_text().splitlines() if "=" in line)
@@ -95,7 +95,7 @@ def test_step_ignores_prs_without_dependency_files(repo, tmp_path):
     (repo / "main.py").write_text("print(1)\n")
     git(repo, "add", "."); git(repo, "commit", "-qm", "pr")
     result = run_step(repo, tmp_path)
-    assert result["exit_code"] == "0" and "comment_file" not in result
+    assert result["exit_code"] == "0" and result["findings"] == "0" and result["scanned"] == "0"
 
 
 @needs_tools
