@@ -41,13 +41,13 @@ Changelog = "https://github.com/gaurav-11-cyber/Unslop/blob/main/CHANGELOG.md"
 unslop = "unslop.cli:main"
 
 [tool.setuptools]
-packages = ["unslop"]
+packages = ["unslop", "unslop.data"]
 
 [tool.setuptools.dynamic]
 version = { attr = "unslop.__version__" }
 
 [tool.setuptools.package-data]
-unslop = ["data/*.json"]
+"unslop.data" = ["*.json"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
