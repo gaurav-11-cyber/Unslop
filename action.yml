@@ -1,5 +1,5 @@
 name: "Unslop"
-description: "Block AI-hallucinated (slopsquatted) PyPI and npm dependencies in pull requests."
+description: "CI/CD security gate for pull requests: slopsquatted dependencies, known vulnerabilities, secrets, SBOM and policy."
 author: "Gaurav Raj"
 branding:
   icon: shield
@@ -30,6 +30,12 @@ inputs:
   strict-docs:
     description: "Keep BLOCK for unknown packages found in docs and scripts (default: downgrade to WARN)."
     default: "false"
+  policy:
+    description: "Path of the policy file (used only if it exists)."
+    default: "unslop.toml"
+  vulnerabilities:
+    description: "Check pinned dependencies against the OSV vulnerability database."
+    default: "true"
   python-version:
     description: "Python version used to run the scanner."
     default: "3.12"
@@ -53,6 +59,8 @@ runs:
       env:
         BASE_REF: ${{ github.base_ref }}
         STRICT_DOCS: ${{ inputs.strict-docs }}
+        POLICY: ${{ inputs.policy }}
+        VULNS: ${{ inputs.vulnerabilities }}
       run: |
         set +e
         OUT="${RUNNER_TEMP:-/tmp}"
@@ -73,15 +81,13 @@ runs:
 
         FILES=()
         while IFS= read -r -d '' f; do FILES+=("$f"); done < "$OUT/unslop-files.bin"
-        if [ "${#FILES[@]}" -eq 0 ]; then
-          echo "No dependency manifests, docs or scripts changed."
-          echo "exit_code=0" >> "$GITHUB_OUTPUT"
-          exit 0
-        fi
 
-        ARGS=(scan "${FILES[@]}" --base "origin/${BASE_REF}"
-              --markdown "$OUT/unslop-comment.md" --json "$OUT/unslop-report.json" --sarif "$OUT/unslop.sarif")
+        ARGS=(gate "${FILES[@]}" --base "origin/${BASE_REF}"
+              --markdown "$OUT/unslop-comment.md" --json "$OUT/unslop-report.json"
+              --sarif "$OUT/unslop.sarif" --sbom "$OUT/unslop-sbom.cdx.json" --github-output "$GITHUB_OUTPUT")
         [ "$STRICT_DOCS" = "true" ] && ARGS+=(--strict-docs)
+        [ "$VULNS" = "false" ] && ARGS+=(--no-vulns)
+        [ -f "$POLICY" ] && ARGS+=(--policy "$POLICY")
         unslop "${ARGS[@]}"
         echo "exit_code=$?" >> "$GITHUB_OUTPUT"
 
@@ -90,7 +96,16 @@ runs:
           cat "$OUT/unslop-comment.md" >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
         fi
         [ -f "$OUT/unslop.sarif" ] && echo "sarif_file=$OUT/unslop.sarif" >> "$GITHUB_OUTPUT"
+        [ -f "$OUT/unslop-sbom.cdx.json" ] && echo "sbom_file=$OUT/unslop-sbom.cdx.json" >> "$GITHUB_OUTPUT"
         exit 0
+
+    - name: Attach the SBOM to the run
+      if: always() && steps.scan.outputs.sbom_file != ''
+      continue-on-error: true
+      uses: actions/upload-artifact@v4
+      with:
+        name: sbom
+        path: ${{ steps.scan.outputs.sbom_file }}
 
     - name: Upload SARIF to code scanning
       if: always() && steps.scan.outputs.sarif_file != '' && github.event.repository.private == false
@@ -106,6 +121,8 @@ runs:
       uses: actions/github-script@v7
       env:
         COMMENT_FILE: ${{ steps.scan.outputs.comment_file }}
+        FINDINGS: ${{ steps.scan.outputs.findings }}
+        SCANNED: ${{ steps.scan.outputs.scanned }}
       with:
         github-token: ${{ inputs.github-token }}
         script: |
@@ -118,8 +135,8 @@ runs:
           const existing = comments.find(c => c.body && c.body.includes(marker));
           if (existing) {
             await github.rest.issues.updateComment({ owner, repo, comment_id: existing.id, body });
-          } else {
-            await github.rest.issues.createComment({ owner, repo, issue_number, body });
+          } else if (Number(process.env.FINDINGS || 0) > 0 || Number(process.env.SCANNED || 0) > 0) {
+            await github.rest.issues.createComment({ owner, repo, issue_number, body });   // stay quiet on pull requests with nothing to report
           }
 
     - name: Enforce the result

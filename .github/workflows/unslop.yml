@@ -5,20 +5,6 @@ name: Unslop
 
 on:
   pull_request:
-    paths:
-      - "requirements*.txt"
-      - "**/requirements*.txt"
-      - "package.json"
-      - "**/package.json"
-      - "**/package-lock.json"
-      - "**/pyproject.toml"
-      - "**/*.md"
-      - "**/*.mdx"
-      - "**/*.sh"
-      - "**/*.yml"
-      - "**/*.yaml"
-      - "**/Dockerfile*"
-      - "**/.cursorrules"
 
 permissions:
   contents: read
